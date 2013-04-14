@@ -1,1 +1,12 @@
 language: haskell
+
+before_install:
+  - pushd /tmp
+  - wget https://leveldb.googlecode.com/files/leveldb-1.9.0.tar.gz
+  - tar xvf leveldb-1.9.0.tar.gz
+  - pushd leveldb-1.9.0
+  - make
+  - sudo mv ./libleveldb* /usr/local/lib
+  - sudo cp -a ./include/leveldb /usr/local/include
+  - popd
+  - popd
