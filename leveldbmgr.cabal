@@ -1,0 +1,41 @@
+Name:                leveldbmgr
+Version:             0.0.0.0
+Synopsis:            CLI access to LevelDB
+-- Description:         
+Homepage:            https://github.com/NicolasT/leveldbmgr
+Bug-Reports:         https://github.com/NicolasT/leveldbmgr/issues
+
+Author:              Nicolas Trangez
+Maintainer:          ikke@nicolast.be
+
+License:             GPL-2
+License-File:        LICENSE
+Copyright:           (c) 2013, Nicolas Trangez
+
+Category:            Database
+
+Build-Type:          Simple
+Cabal-Version:       >=1.8
+
+Extra-Source-Files:  README.md
+
+Source-Repository head
+  Type:     git
+  Location: git://github.com/NicolasT/leveldbmgr.git
+
+Executable leveldbmgr
+  Main-is:             leveldbmgr.hs
+
+  Build-Depends:       base >= 4 && < 5
+                     , bytestring
+                     , mtl
+                     , transformers
+                     , resourcet
+                     , optparse-applicative
+                     , data-default
+                     , leveldb-haskell
+
+  Ghc-Options:         -Wall -rtsopts -funbox-strict-fields
+  Ghc-Prof-Options:    -prof -caf-all -auto-all
+
+  Hs-Source-Dirs:      bin
