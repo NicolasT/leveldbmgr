@@ -21,8 +21,8 @@ import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 import Control.Monad.Trans.Resource (MonadResource, runResourceT)
 
+import Data.Bits (shift)
 import Data.List (intercalate)
-
 import Data.Version (versionBranch)
 
 import Data.ByteString (ByteString)
@@ -32,8 +32,6 @@ import qualified Data.ByteString.Char8 as BS8
 import System.IO
 import System.Exit
 import System.Environment
-
-import Data.Default
 
 import Options.Applicative
 import Options.Applicative.Arrows
@@ -46,7 +44,6 @@ import qualified Paths_leveldbmgr
 -- * Command line parsing
 
 data Args = Args CommonOpts Command
-  deriving Show
 
 -- | Parser for CLI arguments.
 parser :: Parser Args
@@ -67,7 +64,10 @@ parser = runA $ proc () -> do
                     (progDesc "Set a key in the database"))
           <> command "delete"
                 (info deleteParser
-                    (progDesc "Delete a key from the database"))) -< ()
+                    (progDesc "Delete a key from the database"))
+          <> command "repair"
+                (info repairParser
+                    (progDesc "Repair a database"))) -< ()
     A helper -< Args com cmd
 
 
@@ -94,20 +94,100 @@ commonOpts = CommonOpts
             <> metavar "PATH")
 
 
+-- | Parser for database open options.
+openOpts :: Parser LDB.Options
+openOpts = LDB.Options
+    <$> option
+            (  long "block-restart-interval"
+            <> help "Number of keys between restart points for delta encoding of keys"
+            <> value 16
+            <> showDefault
+            <> metavar "INT"
+            <> hidden)
+    <*> option
+            (  long "block-size"
+            <> help "Approximate size of user data packed per block"
+            <> value 4096
+            <> showDefault
+            <> metavar "INT"
+            <> hidden)
+    <*> option
+            (  long "cache-size"
+            <> help "Internal cache size (defaults to 8MB when 0)"
+            <> value 0
+            <> showDefault
+            <> metavar "INT"
+            <> hidden)
+    <*> pure Nothing
+    <*> nullOption
+            (  long "compression"
+            <> help "Compress blocks using the specified compression algorithm ('snappy' or 'none')"
+            <> value LDB.Snappy
+            <> showDefault
+            <> showDefaultWith showCompression
+            <> reader readCompression
+            <> hidden)
+    <*> pure False
+    <*> pure False
+    <*> option
+            (  long "max-open-files"
+            <> help "Number of open files that can be used by the DB"
+            <> value 1000
+            <> showDefault
+            <> metavar "INT"
+            <> hidden)
+    <*> switch
+            (  long "paranoid-checks"
+            <> help "Perform aggressive checking of the data being processed (dangerous)"
+            <> internal)
+    <*> option
+            (  long "write-buffer-size"
+            <> help "Amount of data to build up in memory before converting to a sorted on-disk file"
+            <> value (4 `shift` 20)
+            <> showDefault
+            <> metavar "INT"
+            <> hidden)
+    <*> pure Nothing
+  where
+    showCompression v = case v of
+        LDB.NoCompression -> "none"
+        LDB.Snappy -> "snappy"
+    readCompression v | v == "none" = Right LDB.NoCompression
+                      | v == "snappy" = Right LDB.Snappy
+                      | otherwise = Left $ ErrorMsg $ "Unknown compression scheme `" ++ v ++ "'"
+
+-- | Parser for database read options.
+readOpts :: Parser LDB.ReadOptions
+readOpts = LDB.ReadOptions
+    <$> switch
+            (  long "verify-checksums"
+            <> help "Verify all data read from underlying storage against corresponding checksums")
+    <*> pure True
+    <*> pure Nothing
+
+-- | Parser for database write options.
+writeOpts :: Parser LDB.WriteOptions
+writeOpts = LDB.WriteOptions
+    <$> switch
+            (  long "sync"
+            <> help "Force sync of OS buffers")
+
+
 -- ** Specific commands
 
 data Command = Version
-             | Create
-             | Get GetOpts
-             | Set SetOpts
-             | Delete DeleteOpts
-  deriving Show
+             | Create LDB.Options
+             | Get GetOpts LDB.Options LDB.ReadOptions
+             | Set SetOpts LDB.Options LDB.WriteOptions
+             | Delete DeleteOpts LDB.Options LDB.WriteOptions
+             | Repair LDB.Options
+
 
 -- *** @create@ command
 
 -- | Parser for @create@ options.
 createParser :: Parser Command
-createParser = pure Create <$> helper
+createParser = Create <$> openOpts <**> helper
 
 
 -- *** @get@ command
@@ -119,7 +199,7 @@ data GetOpts = GetOpts { getKey :: Maybe ByteString
 
 -- | Parser for @get@ options.
 getParser :: Parser Command
-getParser = Get <$> getOpts <**> helper
+getParser = Get <$> getOpts <*> openOpts <*> readOpts <**> helper
   where
     getOpts = flip GetOpts
         <$> switch
@@ -137,7 +217,7 @@ data SetOpts = SetOpts ByteString (Maybe ByteString)
 
 -- | Parser for @set@ options.
 setParser :: Parser Command
-setParser = Set <$> setOpts <**> helper
+setParser = Set <$> setOpts <*> openOpts <*> writeOpts <**> helper
   where
     setOpts = SetOpts
         <$> argument toBS
@@ -155,12 +235,17 @@ data DeleteOpts = DeleteOpts (Maybe ByteString)
 
 -- | Parser for @delete@ options.
 deleteParser :: Parser Command
-deleteParser = Delete <$> deleteOpts <**> helper
+deleteParser = Delete <$> deleteOpts <*> openOpts <*> writeOpts <**> helper
   where
     deleteOpts = DeleteOpts
         <$> (optional . argument toBS)
                 (  help "Key to delete"
                 <> metavar "KEY")
+
+
+-- *** @repair@ command
+repairParser :: Parser Command
+repairParser = Repair <$> openOpts <**> helper
 
 
 -- ** Utilities
@@ -216,10 +301,11 @@ run (Args opts cmd) = runReaderT (unAction act) opts
   where
     act = case cmd of
         Version -> runVersion
-        Get a -> runGet a
-        Set a -> runSet a
-        Create -> runCreate
-        Delete a -> runDelete a
+        Get a d r -> runGet a d r
+        Set a d w -> runSet a d w
+        Create d -> runCreate d
+        Delete a d w -> runDelete a d w
+        Repair d -> runRepair d
 
 -- | Execute the @version@ command.
 runVersion :: MonadResource m => Action m ExitCode
@@ -233,11 +319,11 @@ runVersion = do
     version = intercalate "." $ map show $ versionBranch Paths_leveldbmgr.version
 
 -- | Execute a @get@ command.
-runGet :: MonadResource m => GetOpts -> Action m ExitCode
-runGet opts = run' =<< maybeStdin (getKey opts)
+runGet :: MonadResource m => GetOpts -> LDB.Options -> LDB.ReadOptions -> Action m ExitCode
+runGet opts dbOptions readOptions = run' =<< maybeStdin (getKey opts)
   where
-    run' key = withDB def $ \db -> do
-        v <- lift $ LDB.get db def key
+    run' key = withDB dbOptions $ \db -> do
+        v <- lift $ LDB.get db readOptions key
         case v of
             Just v' -> do
                 let put = if getNoLn opts then BS.putStr else BS8.putStrLn
@@ -248,31 +334,38 @@ runGet opts = run' =<< maybeStdin (getKey opts)
                 return $ ExitFailure 10
 
 -- | Execute a @set@ command.
-runSet :: MonadResource m => SetOpts -> Action m ExitCode
-runSet (SetOpts key v) = run' =<< maybeStdin v
+runSet :: MonadResource m => SetOpts -> LDB.Options -> LDB.WriteOptions -> Action m ExitCode
+runSet (SetOpts key v) dbOptions writeOptions = run' =<< maybeStdin v
   where
-    run' val = withDB def $ \db -> do
-        lift $ LDB.put db def key val
+    run' val = withDB dbOptions $ \db -> do
+        lift $ LDB.put db writeOptions key val
         return ExitSuccess
 
 -- | Execute a @create@ command.
-runCreate :: MonadResource m => Action m ExitCode
-runCreate = do
+runCreate :: MonadResource m => LDB.Options -> Action m ExitCode
+runCreate dbOptions = do
     opts <- getOptions
     _db <- lift $ LDB.open (optPath opts) cfg
     return ExitSuccess
   where
-    cfg = def { createIfMissing = True
-              , errorIfExists = True
-              }
+    cfg = dbOptions { createIfMissing = True
+                    , errorIfExists = True
+                    }
 
 -- | Execute a @delete@ command.
-runDelete :: MonadResource m => DeleteOpts -> Action m ExitCode
-runDelete (DeleteOpts k) = run' =<< maybeStdin k
+runDelete :: MonadResource m => DeleteOpts -> LDB.Options -> LDB.WriteOptions -> Action m ExitCode
+runDelete (DeleteOpts k) dbOptions writeOptions = run' =<< maybeStdin k
   where
-    run' key = withDB def $ \db -> do
-        lift $ LDB.delete db def key
+    run' key = withDB dbOptions $ \db -> do
+        lift $ LDB.delete db writeOptions key
         return ExitSuccess
+
+-- | Execute a @repair@ command.
+runRepair :: MonadResource m => LDB.Options -> Action m ExitCode
+runRepair dbOptions = do
+    cfg <- getOptions
+    lift $ LDB.repair (optPath cfg) dbOptions
+    return ExitSuccess
 
 
 -- * Main
