@@ -73,16 +73,16 @@ data CommonOpts = CommonOpts { optVerbose :: Bool
 commonOpts :: Parser CommonOpts
 commonOpts = CommonOpts
     <$> switch
-        (short 'v'
-        <> long "verbose"
-        <> help "Output logging to stderr")
+            (  short 'v'
+            <> long "verbose"
+            <> help "Output logging to stderr")
     <*> strOption
-        (short 'p'
-        <> long "path"
-        <> value "."
-        <> showDefault
-        <> help "Path of the database"
-        <> metavar "PATH")
+            (  short 'p'
+            <> long "path"
+            <> value "."
+            <> showDefault
+            <> help "Path of the database"
+            <> metavar "PATH")
 
 
 -- ** Specific commands
@@ -97,8 +97,7 @@ data Command = Create
 
 -- | Parser for @create@ options.
 createParser :: Parser Command
-createParser = runA $ proc () ->
-    A helper -< Create
+createParser = pure Create <$> helper
 
 
 -- *** @get@ command
@@ -110,19 +109,15 @@ data GetOpts = GetOpts { getKey :: Maybe ByteString
 
 -- | Parser for @get@ options.
 getParser :: Parser Command
-getParser = runA $ proc () -> do
-    config <- asA getOpts -< ()
-    A helper -< Get config
+getParser = Get <$> getOpts <**> helper
   where
-    getOpts = runA $ proc () -> do
-        ln <- (asA . switch)
-                (short 'n'
-                <> help "Don't print a newline after the value") -< ()
-        key <- (asA . optional . argument (return . BS8.pack))
-                (help "Key to retrieve"
-                <> metavar "KEY") -< ()
-       
-        returnA -< GetOpts key ln
+    getOpts = flip GetOpts
+        <$> switch
+                (  short 'n'
+                <> help "Don't print a newline after the value" )
+        <*> (optional . argument toBS)
+                (  help "Key to retrieve"
+                <> metavar "KEY")
 
 
 -- *** @set@ command
@@ -132,18 +127,15 @@ data SetOpts = SetOpts ByteString (Maybe ByteString)
 
 -- | Parser for @set@ options.
 setParser :: Parser Command
-setParser = runA $ proc () -> do
-    config <- asA setOpts -< ()
-    A helper -< Set config
+setParser = Set <$> setOpts <**> helper
   where
-    setOpts = runA $ proc () -> do
-        key <- (asA . argument (return . BS8.pack))
-                (help "Key to set"
-                <> metavar "KEY") -< ()
-        value' <- (asA . optional . argument (return . BS8.pack))
-                (help "Value to set"
-                <> metavar "VALUE") -< ()
-        returnA -< SetOpts key value'
+    setOpts = SetOpts
+        <$> argument toBS
+                (  help "Key to set"
+                <> metavar "KEY")
+        <*> (optional . argument toBS)
+                (  help "Value to set"
+                <> metavar "VALUE")
 
 
 -- *** @delete@ commmand
@@ -153,16 +145,19 @@ data DeleteOpts = DeleteOpts (Maybe ByteString)
 
 -- | Parser for @delete@ options.
 deleteParser :: Parser Command
-deleteParser = runA $ proc () -> do
-    config <- asA deleteOpts -< ()
-    A helper -< Delete config
+deleteParser = Delete <$> deleteOpts <**> helper
   where
-    deleteOpts = runA $ proc () -> do
-        key <- (asA . optional . argument (return . BS8.pack))
-                (help "Key to delete"
-                <> metavar "KEY") -< ()
-        returnA -< DeleteOpts key
+    deleteOpts = DeleteOpts
+        <$> (optional . argument toBS)
+                (  help "Key to delete"
+                <> metavar "KEY")
 
+
+-- ** Utilities
+
+-- | Pack a 'String' into a 'ByteString' inside some 'Monad' @m@
+toBS :: Monad m => String -> m ByteString
+toBS = return . BS8.pack
 
 
 -- * Command implementations
