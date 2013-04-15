@@ -21,6 +21,10 @@ import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 import Control.Monad.Trans.Resource (MonadResource, runResourceT)
 
+import Data.List (intercalate)
+
+import Data.Version (versionBranch)
+
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -37,6 +41,8 @@ import Options.Applicative.Arrows
 import Database.LevelDB (Options(..))
 import qualified Database.LevelDB as LDB
 
+import qualified Paths_leveldbmgr
+
 -- * Command line parsing
 
 data Args = Args CommonOpts Command
@@ -47,7 +53,10 @@ parser :: Parser Args
 parser = runA $ proc () -> do
     com <- asA commonOpts -< ()
     cmd <- (asA . subparser)
-            (command "create"
+            (command "version"
+                (info (pure Version)
+                    (progDesc "Display version information"))
+          <> command "create"
                 (info createParser
                     (progDesc "Create a database"))
           <> command "get"
@@ -87,7 +96,8 @@ commonOpts = CommonOpts
 
 -- ** Specific commands
 
-data Command = Create
+data Command = Version
+             | Create
              | Get GetOpts
              | Set SetOpts
              | Delete DeleteOpts
@@ -205,10 +215,22 @@ run :: MonadResource m => Args -> m ExitCode
 run (Args opts cmd) = runReaderT (unAction act) opts
   where
     act = case cmd of
+        Version -> runVersion
         Get a -> runGet a
         Set a -> runSet a
         Create -> runCreate
         Delete a -> runDelete a
+
+-- | Execute the @version@ command.
+runVersion :: MonadResource m => Action m ExitCode
+runVersion = do
+    (ma, mi) <- lift LDB.version
+    liftIO $ do
+        putStrLn $ "leveldbmgr version " ++ version
+        putStrLn $ "libleveldb version " ++ show ma ++ "." ++ show mi
+    return ExitSuccess
+  where
+    version = intercalate "." $ map show $ versionBranch Paths_leveldbmgr.version
 
 -- | Execute a @get@ command.
 runGet :: MonadResource m => GetOpts -> Action m ExitCode
