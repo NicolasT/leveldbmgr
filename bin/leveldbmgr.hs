@@ -34,7 +34,7 @@ import System.Exit
 import System.Environment
 
 import Options.Applicative
-import Options.Applicative.Arrows
+import Options.Applicative.Arrows hiding (loop)
 
 import Database.LevelDB (Options(..))
 import qualified Database.LevelDB as LDB
@@ -59,6 +59,9 @@ parser = runA $ proc () -> do
           <> command "get"
                 (info getParser
                     (progDesc "Retrieve a key from the database"))
+          <> command "range"
+                (info rangeParser
+                    (progDesc "Retrieve a range of key-value pairs from the database"))
           <> command "set"
                 (info setParser
                     (progDesc "Set a key in the database"))
@@ -181,6 +184,7 @@ data Command = Version
              | Set SetOpts LDB.Options LDB.WriteOptions
              | Delete DeleteOpts LDB.Options LDB.WriteOptions
              | Repair LDB.Options
+             | Range RangeOpts LDB.Options LDB.ReadOptions
 
 
 -- *** @create@ command
@@ -248,6 +252,53 @@ repairParser :: Parser Command
 repairParser = Repair <$> openOpts <**> helper
 
 
+-- *** @range@ command
+
+data RangeOpts = RangeOpts { rangeKeyValueDelimiter :: ByteString
+                           , rangePairDelimiter :: ByteString
+                           , rangeFrom :: Maybe ByteString
+                           , rangeExcludeFrom :: Bool
+                           , rangeTo :: Maybe ByteString
+                           , rangeExcludeTo :: Bool
+                           }
+  deriving Show
+
+-- | Parser for @range@ options.
+rangeParser :: Parser Command
+rangeParser = Range <$> rangeOpts <*> openOpts <*> readOpts <**> helper
+  where
+    rangeOpts = RangeOpts
+        <$> nullOption
+                (  long "key-value-delimiter"
+                <> help "Delimiter between keys and values"
+                <> value (BS8.pack " -> ")
+                <> showDefault
+                <> reader toBS)
+        <*> nullOption
+                (  long "pair-delimiter"
+                <> help "Delimiter between key-value pairs"
+                <> value (BS8.singleton '\n')
+                <> showDefault
+                <> reader toBS)
+        <*> (optional . nullOption)
+                (  short 'f'
+                <> long "from"
+                <> help "Start key"
+                <> metavar "KEY"
+                <> reader toBS)
+        <*> switch
+                (  long "exclude-from"
+                <> help "Exclude the 'from' key")
+        <*> (optional . nullOption)
+                (  short 't'
+                <> long "to"
+                <> help "End key"
+                <> metavar "KEY"
+                <> reader toBS)
+        <*> switch
+                (  long "exclude-to"
+                <> help "Exclude the 'to' key" )
+
 -- ** Utilities
 
 -- | Pack a 'String' into a 'ByteString' inside some 'Monad' @m@
@@ -306,6 +357,7 @@ run (Args opts cmd) = runReaderT (unAction act) opts
         Create d -> runCreate d
         Delete a d w -> runDelete a d w
         Repair d -> runRepair d
+        Range a d r -> runRange a d r
 
 -- | Execute the @version@ command.
 runVersion :: MonadResource m => Action m ExitCode
@@ -366,6 +418,52 @@ runRepair dbOptions = do
     cfg <- getOptions
     lift $ LDB.repair (optPath cfg) dbOptions
     return ExitSuccess
+
+-- | Execute a @range@ command.
+runRange :: MonadResource m => RangeOpts -> LDB.Options -> LDB.ReadOptions -> Action m ExitCode
+runRange opts dbOptions readOptions = withDB dbOptions $ \db -> lift $ do
+    iter <- LDB.iterOpen db readOptions
+    case rangeFrom opts of
+        Nothing -> LDB.iterFirst iter
+        Just k -> LDB.iterSeek iter k
+
+    valid <- LDB.iterValid iter
+
+    if not valid
+        then return $ ExitFailure 11
+        else do
+            Just key <- LDB.iterKey iter
+            when (rangeExcludeFrom opts && (Just key == rangeFrom opts)) $
+                LDB.iterNext iter
+
+            let done = case rangeTo opts of
+                    Nothing -> const False
+                    Just k -> \k' -> if rangeExcludeTo opts
+                                         then k' >= k
+                                         else k' > k
+
+            loop done iter
+  where
+    loop done iter = do
+        valid <- LDB.iterValid iter
+        if not valid
+            then return ExitSuccess
+            else do
+                Just k <- LDB.iterKey iter
+                if done k
+                    then return ExitSuccess
+                    else do
+                        Just v <- LDB.iterValue iter
+
+                        liftIO $ do
+                            BS.putStr k
+                            BS.putStr $ rangeKeyValueDelimiter opts
+                            BS.putStr v
+                            BS.putStr $ rangePairDelimiter opts
+
+                        LDB.iterNext iter
+
+                        loop done iter
 
 
 -- * Main
