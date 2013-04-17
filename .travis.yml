@@ -14,3 +14,6 @@ before_install:
   - sudo cp -a ./include/leveldb /usr/local/include
   - popd
   - popd
+
+install:
+  - cabal install --only-dependencies --enable-tests --force-reinstalls
