@@ -50,8 +50,11 @@ Executable leveldbmgr
                      , transformers
                      , resourcet
                      , optparse-applicative
+                     , conduit
+                     , binary
                      , data-default
                      , leveldb-haskell
+                     , leveldbmgr
 
   Ghc-Options:         -Wall -rtsopts -funbox-strict-fields
   Ghc-Prof-Options:    -prof -caf-all -auto-all

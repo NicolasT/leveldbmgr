@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- |
 -- Module     : Main
 -- Copyright  : (c) 2013, Nicolas Trangez
@@ -19,15 +21,18 @@ import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Reader.Class (MonadReader(ask))
 import Control.Monad.Trans.Class (MonadTrans(lift))
 import Control.Monad.Trans.Reader (ReaderT, runReaderT)
-import Control.Monad.Trans.Resource (MonadResource, runResourceT)
 
 import Data.Bits (shift)
-import Data.List (intercalate)
+import Data.List (intercalate, intersperse)
+import Data.Monoid (mconcat)
 import Data.Version (versionBranch)
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy.Char8 as LBS8
 
 import System.IO
 import System.Exit
@@ -36,8 +41,17 @@ import System.Environment
 import Options.Applicative
 import Options.Applicative.Arrows hiding (loop)
 
+import Data.Binary (decode)
+
+import Data.Conduit
+import qualified Data.Conduit.List as CL
+import qualified Data.Conduit.Binary as CB
+
 import Database.LevelDB (Options(..))
 import qualified Database.LevelDB as LDB
+
+import qualified Database.LevelDB.Format.Log as Log
+import qualified Database.LevelDB.Format.WriteBatch as WB
 
 import qualified Paths_leveldbmgr
 
@@ -70,7 +84,10 @@ parser = runA $ proc () -> do
                     (progDesc "Delete a key from the database"))
           <> command "repair"
                 (info repairParser
-                    (progDesc "Repair a database"))) -< ()
+                    (progDesc "Repair a database"))
+          <> command "dump-log"
+                (info dumpLogParser
+                    (progDesc "Dump content of a log file"))) -< ()
     A helper -< Args com cmd
 
 
@@ -185,6 +202,7 @@ data Command = Version
              | Delete DeleteOpts LDB.Options LDB.WriteOptions
              | Repair LDB.Options
              | Range RangeOpts LDB.Options LDB.ReadOptions
+             | DumpLog FilePath
 
 
 -- *** @create@ command
@@ -297,7 +315,19 @@ rangeParser = Range <$> rangeOpts <*> openOpts <*> readOpts <**> helper
                 <> reader toBS)
         <*> switch
                 (  long "exclude-to"
-                <> help "Exclude the 'to' key" )
+                <> help "Exclude the 'to' key")
+
+
+-- *** @dump-log@ command
+
+-- | Parser for @dump-log@ options.
+dumpLogParser :: Parser Command
+dumpLogParser = DumpLog <$> dumpLogOpts <**> helper
+  where
+    dumpLogOpts =
+        argument Just
+            (metavar "PATH" )
+
 
 -- ** Utilities
 
@@ -358,6 +388,7 @@ run (Args opts cmd) = runReaderT (unAction act) opts
         Delete a d w -> runDelete a d w
         Repair d -> runRepair d
         Range a d r -> runRange a d r
+        DumpLog p -> runDumpLog p
 
 -- | Execute the @version@ command.
 runVersion :: MonadResource m => Action m ExitCode
@@ -464,6 +495,26 @@ runRange opts dbOptions readOptions = withDB dbOptions $ \db -> lift $ do
                         LDB.iterNext iter
 
                         loop done iter
+
+runDumpLog :: MonadResource m => FilePath -> Action m ExitCode
+runDumpLog path = lift (CB.sourceFile path $= Log.logToRecords
+                                           =$= decodeWriteBatch
+                                           =$= formatWriteBatch
+                                           $$ dump)
+                                           >> return ExitSuccess
+  where
+      decodeWriteBatch :: Monad m => Conduit LBS.ByteString m WB.WriteBatch
+      decodeWriteBatch = CL.map decode
+      formatWriteBatch :: Monad m => Conduit WB.WriteBatch m LBS.ByteString
+      formatWriteBatch = CL.map (Builder.toLazyByteString . format)
+        where
+          format (WB.WriteBatch s r) =  beginPre <> (Builder.string8 $ show s) <> post
+                                     <> (mconcat . intersperse (Builder.char8 '\n') $ map (Builder.string8 . show) r)
+                                     <> endPre <> (Builder.string8 $ show s) <> post
+          beginPre = Builder.lazyByteString "=== Begin WriteBatch "
+          post = Builder.lazyByteString " ===\n"
+          endPre = Builder.lazyByteString "\n=== End WriteBatch "
+      dump = CL.mapM_ (liftIO . LBS8.putStrLn)
 
 
 -- * Main
