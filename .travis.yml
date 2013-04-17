@@ -16,4 +16,6 @@ before_install:
   - popd
 
 install:
+  - sudo apt-get install -y llvm-3.0
+  - cabal update
   - cabal install --only-dependencies --enable-tests --force-reinstalls
