@@ -23,6 +23,24 @@ Source-Repository head
   Type:     git
   Location: git://github.com/NicolasT/leveldbmgr.git
 
+Library
+  Exposed-Modules:     Database.LevelDB.Format.Log
+                     , Database.LevelDB.Format.WriteBatch
+  Other-Modules:       Data.Digest.CRC32C
+
+  Build-Depends:       base >= 4 && < 5
+                     , transformers
+                     , bytestring >= 0.10.2
+                     , vector
+                     , binary
+                     , conduit
+                     , QuickCheck
+
+  Ghc-Options:         -Wall -rtsopts -funbox-strict-fields
+  Ghc-Prof-Options:    -prof -caf-all -auto-all
+
+  Hs-Source-Dirs:      src
+
 Executable leveldbmgr
   Main-is:             leveldbmgr.hs
 
@@ -39,3 +57,25 @@ Executable leveldbmgr
   Ghc-Prof-Options:    -prof -caf-all -auto-all
 
   Hs-Source-Dirs:      bin
+
+Test-Suite test-format
+  Type:                exitcode-stdio-1.0
+
+  Main-Is:             format.hs
+
+  Build-Depends:       base >= 4 && < 5
+                     , vector
+                     , bytestring
+                     , binary
+                     , conduit
+                     , HUnit
+                     , QuickCheck
+                     , test-framework
+                     , test-framework-hunit
+                     , test-framework-quickcheck2
+
+  Ghc-Options:         -Wall -rtsopts -funbox-strict-fields
+  Ghc-Prof-Options:    -prof -caf-all -auto-all
+
+  Hs-Source-Dirs:      test
+                     , src
